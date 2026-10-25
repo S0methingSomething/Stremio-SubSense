@@ -114,10 +114,16 @@ async function get(cacheKey, ctx = {}) {
     };
 }
 
-/** Store an already quality-sorted, placeholder-bearing list. */
-async function set(cacheKey, subtitles) {
+/**
+ * Store an already quality-sorted, placeholder-bearing list.
+ * `timestampMs` lets a caller carry an older source's birth time (e.g. an L2 hit's row
+ * age) into the stamp, so a listing served from L2 is not re-stamped as fresh - without
+ * this, titles requested less often than L1_TTL_HOURS are never re-fetched until their
+ * L2 row expires.
+ */
+async function set(cacheKey, subtitles, timestampMs = Date.now()) {
     if (!Array.isArray(subtitles) || subtitles.length === 0) return false;
-    const payload = JSON.stringify({ t: Date.now(), subs: subtitles });
+    const payload = JSON.stringify({ t: timestampMs, subs: subtitles });
     const res = await safe(r => r.set(redisKey(cacheKey), payload, 'EX', TTL_SECONDS), null);
     return res === 'OK';
 }

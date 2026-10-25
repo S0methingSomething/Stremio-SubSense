@@ -106,7 +106,10 @@ async function handleSubtitlesRequest(args, parsedConfig) {
     const l2Hit = await l2.getByContent(parsed.imdbId, parsed.season, parsed.episode, languages);
     if (l2Hit && l2Hit.subtitles.length > 0) {
         metrics.recordCache('l2');
-        l1.set(cacheKey, l2Hit.subtitles).catch(() => {});
+        // Carry the L2 row's age into the L1 stamp: a listing older than STALE_AFTER is
+        // born stale, so the next request schedules a re-fetch instead of trusting the
+        // L2 copy until it expires.
+        l1.set(cacheKey, l2Hit.subtitles, Date.now() - l2Hit.ageSeconds * 1000).catch(() => {});
         const returned = l1.materialize(l2Hit.subtitles, requestContext);
         log('info', `[handler] l2-hit ${reqTag(parsed, languages)} -> ${l2Hit.subtitles.length} subs (returning ${returned.length}) in ${Date.now() - startedAt}ms`);
         fireTrack(parsedConfig, parsed, languages, returned, Date.now() - startedAt, true);
