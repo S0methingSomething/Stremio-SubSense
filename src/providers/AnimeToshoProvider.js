@@ -15,8 +15,10 @@ const { BaseProvider, SubtitleResult } = require('./BaseProvider');
 const { log } = require('../utils');
 const { getAnidbIdForImdb, getAnimeListReady, isAnime } = require('../utils/animeLists');
 const { getEpisodeId, getAnimeTitle, isAnidbConfigured } = require('../utils/anidbApi');
-const { searchByEpisodeId, searchByAnidbId, getTorrentDetail, buildProxyUrl } = require('../utils/animetoshoApi');
-const xyzApi = require('../utils/animetoshoXyzApi');
+const {
+    searchByEpisodeId, searchByAnidbId, searchSeriesReleases, getTorrentDetail,
+    buildProxyUrl, extractSubtitles, countMediainfoTracks, PAGE_SIZE
+} = require('../utils/animetoshoApi');
 const absoluteEpisode = require('../utils/absoluteEpisode');
 const { scoreReleaseSeason, parse: parseMedia } = require('../utils/mediaParser');
 const { getByAlpha3B, getDisplayName, toAlpha3B } = require('../languages');
@@ -327,21 +329,21 @@ class AnimeToshoProvider extends BaseProvider {
                 if (seenAttachments.has(sub.id)) continue;
                 seenAttachments.add(sub.id);
 
-                const langCode = sub.info?.lang;
+                const langCode = sub.info?.language_code || sub.info?.lang;
                 if (!langCode) continue;
 
                 const langEntry = getByAlpha3B(langCode);
                 const alpha2 = langEntry ? langEntry.alpha2 : null;
                 const alpha3B = langEntry ? langEntry.alpha3B : langCode;
 
-                const codec = (sub.info?.codec || '').toLowerCase();
+                const codec = (sub.info?.format || sub.info?.codec || '').toLowerCase();
                 const format = codec === 'ass' || codec === 'ssa' ? 'ass' :
-                              codec === 'srt' ? 'srt' :
+                              codec === 'srt' || codec === 'subrip' ? 'srt' :
                               codec === 'webvtt' ? 'vtt' : codec || 'unknown';
 
                 const keepAss = query && query.keepAss;
                 const outputFmt = (format === 'ass' && keepAss) ? 'ass' : 'vtt';
-                const proxyUrl = buildProxyUrl(this.baseUrl, sub.id, outputFmt);
+                const proxyUrl = buildProxyUrl(this.baseUrl, sub, outputFmt);
 
                 const rawTrackName = sub.info?.name || '';
                 const trackNameLower = rawTrackName.toLowerCase();
@@ -436,7 +438,7 @@ class AnimeToshoProvider extends BaseProvider {
     async _fetchXyzSubtitles(anidbId, query, seenLanguageKeys, cacheKey = null) {
         if (!anidbId) return [];
         try {
-            const releases = await xyzApi.searchByAnidbId(anidbId);
+            const releases = await searchSeriesReleases(anidbId);
             const ordered = this._orderXyzReleases(releases, query.season);
             if (!ordered.length) return [];
 
@@ -461,13 +463,13 @@ class AnimeToshoProvider extends BaseProvider {
 
         for (let i = 0; i < releases.length; i++) {
             const release = releases[i];
-            const detail = await xyzApi.getReleaseDetail(release.id, { background });
+            const detail = await getTorrentDetail(release.id, { background });
             if (!detail) continue;
             this.stats.xyzReleasesExamined++;
 
-            const tracks = xyzApi.extractSubtitles(detail);
+            const tracks = extractSubtitles(detail);
             if (!tracks.length) {
-                if (xyzApi.countMediainfoTracks(detail)) this.stats.xyzReleasesWithoutAttachments++;
+                if (countMediainfoTracks(detail)) this.stats.xyzReleasesWithoutAttachments++;
                 continue;
             }
 
@@ -497,7 +499,7 @@ class AnimeToshoProvider extends BaseProvider {
 
                 results.push(new SubtitleResult({
                     id: `animetosho-xyz-${track.id}`,
-                    url: xyzApi.buildProxyUrl(this.baseUrl, track, outputFmt),
+                    url: buildProxyUrl(this.baseUrl, track, outputFmt),
                     language: alpha2 || track.languageCode,
                     languageCode: alpha3B,
                     source: 'animetosho-xyz',
@@ -535,9 +537,9 @@ class AnimeToshoProvider extends BaseProvider {
         this._track(query, (async () => {
             let budget = XYZ_BACKGROUND_DETAILS;
 
-            for (let offset = xyzApi.PAGE_SIZE; offset <= XYZ_MAX_OFFSET && budget > 0; offset += xyzApi.PAGE_SIZE) {
+            for (let offset = PAGE_SIZE; offset <= XYZ_MAX_OFFSET && budget > 0; offset += PAGE_SIZE) {
                 await new Promise(r => setTimeout(r, XYZ_PAGE_DELAY_MS));
-                const page = await xyzApi.searchByAnidbId(anidbId, offset);
+                const page = await searchSeriesReleases(anidbId, offset, { background: true });
                 if (!page.length) break;
 
                 const named = this._orderXyzReleases(page, query.season)
