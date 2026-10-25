@@ -1,0 +1,89 @@
+# Render blueprint for SubSense.
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo.
+# Free-tier layout: one web service + optional free Key Value. The maintenance
+# worker is commented out because Background Workers are paid-only; the addon
+# keeps serving without it (no cache retention, no analytics folds).
+
+services:
+  # --- API: primary forks WEB_CONCURRENCY request workers ---
+  - type: web
+    name: subsense-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free                      # starter = no spin-down + disks available
+    healthCheckPath: /health        # cheap, no I/O - /health/deep would 503 the deploy
+    autoDeploy: true
+    envVars:
+      # Render free containers hold 512MB total for primary + workers combined,
+      # so one request worker with a capped heap. ass-compiler has an OOM history.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      # No NET_ADMIN / /dev/net/tun on Render - the entrypoint skips WARP cleanly.
+      - key: WARP_ENABLED
+        value: "false"
+      # Required: encrypts provider API keys inside manifest URLs.
+      - key: SUBSENSE_ENCRYPTION_KEY
+        generateValue: true
+      # Public URL baked into proxy links sent to Stremio.
+      - key: SUBSENSE_BASE_URL
+        sync: false
+      # Optional provider keys.
+      - key: WYZIE_API_KEYS
+        sync: false
+      - key: ANIDB_CLIENT
+        sync: false
+      - key: ANIDB_CLIENT_VER
+        value: "1"
+      # Point at the Key Value instance's internal connection string, or leave
+      # empty - the addon serves from SQLite when Redis is unreachable.
+      - key: REDIS_URL
+        sync: false
+      # Remote libSQL (Turso): all three logical stores share one database, so caches
+      # survive Render spin-downs. Leave unset to keep local files (ephemeral on free).
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+
+  # --- Key Value (Redis): hot cache + analytics buffer. Optional but recommended. ---
+  - type: keyvalue
+    name: subsense-redis
+    plan: free
+    maxmemoryPolicy: volatile-lru
+    # Free tier: 25MB, ephemeral. If the free plan is no longer offered, delete
+    # this block and leave REDIS_URL unset - the addon tolerates no Redis.
+
+  # --- Maintenance worker: paid-only on Render. Uncomment on a paid plan. ---
+  # - type: worker
+  #   name: subsense-worker
+  #   runtime: docker
+  #   dockerfilePath: ./Dockerfile
+  #   dockerCommand: node worker.js
+  #   plan: starter
+  #   envVars:
+  #     - key: NODE_OPTIONS
+  #       value: --max-old-space-size=384
+  #     - key: WARP_ENABLED
+  #       value: "false"
+  #     - key: REDIS_URL
+  #       sync: false
+  #     - key: TURSO_URL
+  #       sync: false
+  #     - key: TURSO_AUTH_TOKEN
+  #       sync: false
+  #     # Same persistent disk as the API when you add one (paid plans).
+  #     # - key: CACHE_DB_PATH
+  #     #   value: /var/data/subsense-cache.db
+  #     # - key: STATS_DB_PATH
+  #     #   value: /var/data/subsense-stats.db
+  #     # - key: META_DB_PATH
+  #     #   value: /var/data/subsense-meta.db
+
+# --- Persistent disk (paid plans only): attach to subsense-api for durable caches. ---
+#   disk:
+#     name: subsense-data
+#     mountPath: /var/data
+#     sizeGB: 1
+# ...then set CACHE_DB_PATH/STATS_DB_PATH/META_DB_PATH to /var/data/... above.

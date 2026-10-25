@@ -173,7 +173,20 @@ function ensureDataDir(file) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// Remote libSQL (Turso): when TURSO_URL is set, all three logical stores share one remote
+// database. The separate local files exist as lock domains for local SQLite; remote sqld
+// serializes server-side, and the three schemas declare disjoint table names, so sharing
+// one database is safe.
+const REMOTE_URL = process.env.TURSO_URL || null;
+
 function makeClient(file) {
+    if (REMOTE_URL) {
+        return createClient({
+            url: REMOTE_URL,
+            authToken: process.env.TURSO_AUTH_TOKEN || undefined,
+            intMode: 'number'
+        });
+    }
     ensureDataDir(file);
     return createClient({ url: `file:${file}`, intMode: 'number' });
 }
@@ -184,6 +197,8 @@ const clients = {
     meta:  makeClient(PATHS.meta)
 };
 
+if (REMOTE_URL) log('info', `[DB] remote store: ${REMOTE_URL} (cache/stats/meta share it)`);
+
 function readPragma(result) {
     const row = result.rows[0];
     if (!row) return null;
@@ -191,6 +206,12 @@ function readPragma(result) {
 }
 
 async function applyPragmas(name, client) {
+    // Local-file tuning only: busy_timeout, WAL and cache sizing have no meaning over the
+    // network protocol, and remote sqld rejects several of these pragmas outright.
+    if (REMOTE_URL) {
+        log('debug', `[DB:${name}] remote store - skipping local-file pragmas`);
+        return;
+    }
     // busy_timeout first: without it the statements below fail instantly when several
     // processes open the same file at once, which is what cluster startup does.
     try {
